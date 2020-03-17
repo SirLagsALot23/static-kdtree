@@ -21,7 +21,6 @@
     "dup": "~0.0.0",
     "tape": "~2.12.3",
     "look-alike": "~1.0.1",
-    "kdtree": "~0.0.10",
     "iota-array": "~0.0.1",
     "ndarray-unpack": "~0.0.0",
     "beefy": "^1.1.0",
