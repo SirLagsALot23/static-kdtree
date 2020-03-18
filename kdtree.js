@@ -235,8 +235,18 @@ proto.rnn = function(point, radius, visit) {
   return retval;
 };
 
+/**
+ * Nearest Neighbor:
+ * Calculates the nearest neighbor to a given point.
+ *
+ * Time Complexity O(n log(n)) in the worst case, but in practice much faster if the points are uniformly distributed.
+ *
+ * @param {Array} point - is a query point
+ * @param {number} maxDistance - is an upper bound on the distance to search for nearest points. Default Infinity
+ *
+ * @returns The index of the closest point to the given point
+ */
 proto.nn = function(point, maxDistance) {
-  console.log("Some test message....");
   var n = this.length;
   if (n < 1) {
     return -1;
@@ -345,38 +355,41 @@ proto.nn = function(point, maxDistance) {
   return this.ids[nearest];
 };
 
-proto.knn = function(point, maxPoints, maxDistance) {
-  //Check degenerate cases
+/**
+ * Nearest Neighbor Dynamic 3D:
+ * Calculates the nearest neighbor in a 3 dimensional room, to a given point,
+ * depending on the given transformation matrix.
+ * This can be used to calculate the nearest point to a moving 3d point cloud.
+ * Using the matrix, the whole cloud can be scaled, moved and rotated.
+ *
+ * Time Complexity O(n log(n)) in the worst case, but in practice much faster if the points are uniformly distributed.
+ *
+ * @param {Array} point - is a query point
+ * @param {Array} matrix - 4x4 transformation matrix
+ * @param {number} maxDistance - is an upper bound on the distance to search for nearest points. Default Infinity
+ *
+ * @returns The index of the closest point to the given point
+ */
+proto.nnd3d = function(point, matrix, maxDistance) {
+  if (this.dimension !== 3) {
+    return -1;
+  }
+
+  var n = this.length;
+  if (n < 1) {
+    return -1;
+  }
   if (typeof maxDistance === "number") {
     if (maxDistance < 0) {
-      return [];
+      return -1;
     }
   } else {
     maxDistance = Infinity;
   }
-  var n = this.length;
-  if (n < 1) {
-    return [];
-  }
-  if (typeof maxPoints === "number") {
-    if (maxPoints <= 0) {
-      return [];
-    }
-    maxPoints = Math.min(maxPoints, n) | 0;
-  } else {
-    maxPoints = n;
-  }
-  var ids = this.ids;
-
   var d = this.dimension;
   var points = this.points;
   var pointData = points.data;
   var dataVector = pool.mallocFloat64(d);
-
-  //List of closest points
-  var closestPoints = new KDTHeap(maxPoints, 1);
-  var cl_index = closestPoints.index;
-  var cl_data = closestPoints.data;
 
   var toVisit = new KDTHeap(n, d + 1);
   var index = toVisit.index;
@@ -398,20 +411,17 @@ proto.knn = function(point, maxPoints, maxDistance) {
     var idx = index[0];
     var pidx = points.index(idx, 0);
     var d2 = 0.0;
+
+    // get transformed point (only 3d)
+    var rawPoint = [pointData[pidx], pointData[pidx + 1], pointData[pidx + 2]];
+    var transPoint = this.applyMatrix4ToVector(rawPoint, matrix);
+
     for (var i = 0; i < d; ++i) {
-      d2 += Math.pow(point[i] - pointData[pidx + i], 2);
+      d2 += Math.pow(point[i] - transPoint[i], 2); // apply matrix here
     }
     if (d2 < nearestD) {
-      if (closestPoints.count >= maxPoints) {
-        closestPoints.pop();
-      }
-      var pcount = closestPoints.count;
-      cl_index[pcount] = idx;
-      cl_data[pcount] = -d2;
-      closestPoints.push();
-      if (closestPoints.count >= maxPoints) {
-        nearestD = -cl_data[0];
-      }
+      nearestD = d2;
+      nearest = idx;
     }
 
     //Compute distance bounds for children
@@ -425,7 +435,8 @@ proto.knn = function(point, maxPoints, maxDistance) {
       dataVector[i] = dd;
     }
     var qk = point[k];
-    var pk = pointData[pidx + k];
+
+    var pk = transPoint[k]; // apply matrix here
     var dk = dataVector[k];
     var lk = dk;
     var hk = dk;
@@ -438,6 +449,7 @@ proto.knn = function(point, maxPoints, maxDistance) {
     var d2h = hk + ds;
 
     toVisit.pop();
+
     if (d2l < nearestD) {
       var left = 2 * idx + 1;
       if (left < n) {
@@ -471,17 +483,167 @@ proto.knn = function(point, maxPoints, maxDistance) {
   pool.freeFloat64(dataVector);
   toVisit.dispose();
 
-  //Sort result
-  var result = new Array(closestPoints.count);
-  var ids = this.ids;
-  for (var i = closestPoints.count - 1; i >= 0; --i) {
-    result[i] = ids[cl_index[0]];
-    closestPoints.pop();
+  if (nearest < 0) {
+    return -1;
   }
-  closestPoints.dispose();
-
-  return result;
+  return this.ids[nearest];
 };
+
+(proto.applyMatrix4ToVector = function(vector, matrix) {
+  // copy vector values
+  var x = vector[0],
+    y = vector[1],
+    z = vector[2];
+  var e = matrix.elements;
+
+  var w = 1 / (e[3] * x + e[7] * y + e[11] * z + e[15]);
+
+  var newX = (e[0] * x + e[4] * y + e[8] * z + e[12]) * w;
+  var newY = (e[1] * x + e[5] * y + e[9] * z + e[13]) * w;
+  var newZ = (e[2] * x + e[6] * y + e[10] * z + e[14]) * w;
+
+  return [newX, newY, newZ];
+}),
+  /**
+   * @returns A list of the k closest points to point in the tree.
+   */
+  (proto.knn = function(point, maxPoints, maxDistance) {
+    //Check degenerate cases
+    if (typeof maxDistance === "number") {
+      if (maxDistance < 0) {
+        return [];
+      }
+    } else {
+      maxDistance = Infinity;
+    }
+    var n = this.length;
+    if (n < 1) {
+      return [];
+    }
+    if (typeof maxPoints === "number") {
+      if (maxPoints <= 0) {
+        return [];
+      }
+      maxPoints = Math.min(maxPoints, n) | 0;
+    } else {
+      maxPoints = n;
+    }
+    var ids = this.ids;
+
+    var d = this.dimension;
+    var points = this.points;
+    var pointData = points.data;
+    var dataVector = pool.mallocFloat64(d);
+
+    //List of closest points
+    var closestPoints = new KDTHeap(maxPoints, 1);
+    var cl_index = closestPoints.index;
+    var cl_data = closestPoints.data;
+
+    var toVisit = new KDTHeap(n, d + 1);
+    var index = toVisit.index;
+    var data = toVisit.data;
+    index[0] = 0;
+    for (var i = 0; i <= d; ++i) {
+      data[i] = 0;
+    }
+    toVisit.count += 1;
+
+    var nearest = -1;
+    var nearestD = maxDistance;
+
+    while (toVisit.count > 0) {
+      if (data[0] >= nearestD) {
+        break;
+      }
+
+      var idx = index[0];
+      var pidx = points.index(idx, 0);
+      var d2 = 0.0;
+      for (var i = 0; i < d; ++i) {
+        d2 += Math.pow(point[i] - pointData[pidx + i], 2);
+      }
+      if (d2 < nearestD) {
+        if (closestPoints.count >= maxPoints) {
+          closestPoints.pop();
+        }
+        var pcount = closestPoints.count;
+        cl_index[pcount] = idx;
+        cl_data[pcount] = -d2;
+        closestPoints.push();
+        if (closestPoints.count >= maxPoints) {
+          nearestD = -cl_data[0];
+        }
+      }
+
+      //Compute distance bounds for children
+      var k = bits.log2(idx + 1) % d;
+      var ds = 0;
+      for (var i = 0; i < d; ++i) {
+        var dd = data[i + 1];
+        if (i !== k) {
+          ds += dd;
+        }
+        dataVector[i] = dd;
+      }
+      var qk = point[k];
+      var pk = pointData[pidx + k];
+      var dk = dataVector[k];
+      var lk = dk;
+      var hk = dk;
+      if (qk < pk) {
+        hk = Math.max(dk, Math.pow(pk - qk, 2));
+      } else {
+        lk = Math.max(dk, Math.pow(pk - qk, 2));
+      }
+      var d2l = lk + ds;
+      var d2h = hk + ds;
+
+      toVisit.pop();
+      if (d2l < nearestD) {
+        var left = 2 * idx + 1;
+        if (left < n) {
+          var vcount = toVisit.count;
+          index[vcount] = left;
+          var vptr = vcount * (d + 1);
+          data[vptr] = d2l;
+          for (var i = 1; i <= d; ++i) {
+            data[vptr + i] = dataVector[i - 1];
+          }
+          data[vptr + k + 1] = lk;
+          toVisit.push();
+        }
+      }
+      if (d2h < nearestD) {
+        var right = 2 * (idx + 1);
+        if (right < n) {
+          var vcount = toVisit.count;
+          index[vcount] = right;
+          var vptr = vcount * (d + 1);
+          data[vptr] = d2h;
+          for (var i = 1; i <= d; ++i) {
+            data[vptr + i] = dataVector[i - 1];
+          }
+          data[vptr + k + 1] = hk;
+          toVisit.push();
+        }
+      }
+    }
+
+    pool.freeFloat64(dataVector);
+    toVisit.dispose();
+
+    //Sort result
+    var result = new Array(closestPoints.count);
+    var ids = this.ids;
+    for (var i = closestPoints.count - 1; i >= 0; --i) {
+      result[i] = ids[cl_index[0]];
+      closestPoints.pop();
+    }
+    closestPoints.dispose();
+
+    return result;
+  });
 
 proto.dispose = function kdtDispose() {
   pool.free(this.points.data);
